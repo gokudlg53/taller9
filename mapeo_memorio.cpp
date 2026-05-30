@@ -1,45 +1,213 @@
 #include <iostream>
 #include <fstream>
+#include <vector>
+#include <algorithm>
+#include <chrono>
+#include <cstdlib>
+#include <ctime>
+
 #include <sys/mman.h>
-#include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
-int main(int argc, char *argv[]) {
-if (argc != 2) {
-std::cerr << "Uso: " << argv[0] << " <archivo_a_mapear>" << std::endl;
-return 1;
+
+using namespace std;
+using namespace chrono;
+
+void generarArchivo(const string& nombre,long cantidad)
+{
+    ofstream out(nombre, ios::binary);
+
+    srand(time(NULL));
+
+    for(long i=0;i<cantidad;i++)
+    {
+        int num = rand();
+        out.write((char*)&num,sizeof(int));
+    }
+
+    out.close();
 }
-const char *archivo = argv[1];
-// Abre el archivo en modo de lectura
-int fd = open(archivo, O_RDONLY);
-if (fd == -1) {
-std::cerr << "Error al abrir el archivo" << std::endl;
-return 1;
+
+bool verificarOrdenado(const vector<int>& datos)
+{
+    for(size_t i=1;i<datos.size();i++)
+    {
+        if(datos[i-1] > datos[i])
+            return false;
+    }
+
+    return true;
 }
-// Obtiene el tamaño del archivo
-struct stat info_archivo;
-if (fstat(fd, &info_archivo) == -1) {
-std::cerr << "Error al obtener información del archivo" << std::endl;
-close(fd);
-return 1;
+
+void ordenarMemoria(const string& archivo)
+{
+    cout << "\n===== ORDENAMIENTO EN MEMORIA =====\n";
+
+    auto inicioTotal = high_resolution_clock::now();
+
+    int fd = open(archivo.c_str(), O_RDWR);
+
+    struct stat st;
+    fstat(fd,&st);
+
+    size_t tamArchivo = st.st_size;
+
+    auto inicioMap = high_resolution_clock::now();
+
+    void* map = mmap(
+        NULL,
+        tamArchivo,
+        PROT_READ | PROT_WRITE,
+        MAP_SHARED,
+        fd,
+        0);
+
+    auto finMap = high_resolution_clock::now();
+
+    int* datos = (int*)map;
+
+    size_t cantidad = tamArchivo / sizeof(int);
+
+    auto inicioSort = high_resolution_clock::now();
+
+    sort(datos, datos + cantidad);
+
+    auto finSort = high_resolution_clock::now();
+
+    msync(map,tamArchivo,MS_SYNC);
+
+    auto finTotal = high_resolution_clock::now();
+
+    cout << "Numeros: " << cantidad << endl;
+
+    cout << "Tiempo mapeo: "
+         << duration<double>(finMap-inicioMap).count()
+         << " s\n";
+
+    cout << "Tiempo ordenamiento: "
+         << duration<double>(finSort-inicioSort).count()
+         << " s\n";
+
+    cout << "Tiempo total: "
+         << duration<double>(finTotal-inicioTotal).count()
+         << " s\n";
+
+    munmap(map,tamArchivo);
+    close(fd);
 }
-size_t tam_archivo = info_archivo.st_size;
-// Mapea el archivo en memoria
-void *mapeo = mmap(NULL, tam_archivo, PROT_READ, MAP_PRIVATE, fd, 0);
-if (mapeo == MAP_FAILED) {
-std::cerr << "Error al mapear el archivo en memoria" << std::endl;
-close(fd);
-return 1;
+
+void ordenarDisco(const string& archivo,long tamBloque)
+{
+    cout << "\n===== ORDENAMIENTO EN DISCO =====\n";
+
+    auto inicioTotal = high_resolution_clock::now();
+
+    ifstream in(archivo, ios::binary);
+
+    vector<string> temporales;
+
+    int bloqueNumero=0;
+
+    auto inicioLectura = high_resolution_clock::now();
+
+    while(true)
+    {
+        vector<int> bloque(tamBloque);
+
+        in.read((char*)bloque.data(),
+                tamBloque*sizeof(int));
+
+        long leidos =
+        in.gcount()/sizeof(int);
+
+        if(leidos==0)
+            break;
+
+        bloque.resize(leidos);
+
+        sort(bloque.begin(), bloque.end());
+
+        string temp =
+        "temp_"+to_string(bloqueNumero++)+".bin";
+
+        temporales.push_back(temp);
+
+        ofstream out(temp, ios::binary);
+
+        out.write(
+            (char*)bloque.data(),
+            leidos*sizeof(int));
+
+        out.close();
+    }
+
+    auto finLectura = high_resolution_clock::now();
+
+    in.close();
+
+    auto finTotal = high_resolution_clock::now();
+
+    cout << "Bloques creados: "
+         << temporales.size()
+         << endl;
+
+    cout << "Tamano bloque: "
+         << tamBloque
+         << " numeros\n";
+
+    cout << "Tiempo bloques: "
+         << duration<double>(
+            finLectura-inicioLectura).count()
+         << " s\n";
+
+    cout << "Tiempo total: "
+         << duration<double>(
+            finTotal-inicioTotal).count()
+         << " s\n";
+
+    cout << "(Version simplificada sin merge final)\n";
 }
-// Ahora puedes acceder al contenido del archivo utilizando el puntero 'mapeo'
-char *contenido = static_cast<char *>(mapeo);
-// Por ejemplo, imprime el contenido del archivo en la consola
-std::cout.write(contenido, tam_archivo);
-// Libera los recursos y cierra el archivo
-if (munmap(mapeo, tam_archivo) == -1) {
-std::cerr << "Error al desmapear el archivo de la memoria" << std::endl;
-}
-close(fd);
-return 0;
+
+int main(int argc,char* argv[])
+{
+    if(argc != 2)
+    {
+        cout
+        << "Uso: "
+        << argv[0]
+        << " cantidad_numeros\n";
+
+        return 1;
+    }
+
+    long cantidad = atol(argv[1]);
+
+    string archivo = "datos.bin";
+
+    cout << "Generando archivo...\n";
+
+    generarArchivo(
+        archivo,
+        cantidad);
+
+    cout << "Numeros generados: "
+         << cantidad
+         << endl;
+
+    double mb =
+    (cantidad*sizeof(int))
+    /(1024.0*1024.0);
+
+    cout << "Tamano aproximado: "
+         << mb
+         << " MB\n";
+
+    ordenarMemoria(archivo);
+
+    ordenarDisco(
+        archivo,
+        100000);
+
+    return 0;
 }
